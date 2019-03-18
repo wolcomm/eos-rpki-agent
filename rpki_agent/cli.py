@@ -27,7 +27,7 @@ class RpkiAgent(eossdk.AgentHandler):
     def __init__(self, sdk, args):
         """Initialise the agent instance."""
         self.name = self.__class__.__name__
-        self.tracer = sdk.Tracer(self.name)
+        self.tracer = eossdk.Tracer(self.name)
         self.tracer.trace0("Setting up {}".format(self.name))
         self.args = args
         self.agent_mgr = sdk.get_agent_mgr()
