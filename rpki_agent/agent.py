@@ -37,7 +37,7 @@ class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler):
         with tempfile.NamedTemporaryFile() as tmp:
             # write the profile file
             tmp.write("agentName:{}-%sliceId\n\n".format(name))
-            for profile in cls.sysdb_profiles:
+            for profile in cls.sysdb_mounts:
                 tmp.write("Include: EosSdk_{}.include\n".format(profile))
             tmp.flush()
             # check whether an existing file matches and bail out
@@ -109,23 +109,15 @@ class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler):
         """Write tracing output."""
         self.tracer.trace(level, msg)
 
-    def sleep(self):
-        """Go to sleep for 'refresh_interval' seconds."""
-        self.status = "sleeping"
-        self.timeout_time_is(eossdk.now() + self.refresh_interval)
-
-    def on_initialized(self):
-        """Start the agent after initialisation."""
-        self.status = "init"
+    def configure(self):
+        """Read and set all configuration options."""
         self.trace("Reading configuration options")
         for key in self.agent_mgr.agent_option_iter():
             value = self.agent_mgr.agent_option(key)
-            self.on_agent_option(key, value)
-        self.status = "starting"
-        self.on_timeout()
+            self.set(key, value)
 
-    def on_agent_option(self, key, value):
-        """Handle a change to a configuration option."""
+    def set(self, key, value):
+        """Set a configuration option."""
         if not value:
             value = None
         self.trace("Setting configuration '{}'='{}'".format(key, value))
@@ -134,11 +126,30 @@ class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler):
         else:
             self.trace("Ignoring unknown option '{}'".format(key))
 
-    def on_timeout(self):
-        """Refresh VRP data."""
+    def run(self):
+        """Refresh VRP data and update state."""
         self.status = "running"
         if self.cache_url is not None:
             self.trace("Getting VRP set from {}".format(self.cache_url))
         else:
             self.trace("'cache_url' is not set".format(self.cache_url))
         self.sleep()
+
+    def sleep(self):
+        """Go to sleep for 'refresh_interval' seconds."""
+        self.status = "sleeping"
+        self.timeout_time_is(eossdk.now() + self.refresh_interval)
+
+    def on_initialized(self):
+        """Start the agent after initialisation."""
+        self.status = "init"
+        self.configure()
+        self.run()
+
+    def on_agent_option(self, key, value):
+        """Handle a change to a configuration option."""
+        self.set(key, value)
+
+    def on_timeout(self):
+        """Handle a 'refresh_interval' timeout."""
+        self.run()
