@@ -14,12 +14,16 @@
 
 from __future__ import print_function
 
+import datetime
 import filecmp
 import os
 import shutil
 import tempfile
 
 import eossdk
+import requests
+
+from rpki_agent.vrp import VRP
 
 
 class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler):
@@ -64,6 +68,9 @@ class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler):
         self._refresh_interval = 10
         # create state containers
         self._status = None
+        self._last_start = None
+        self._last_end = None
+        self._result = None
         self.state = dict()
 
     @property
@@ -102,12 +109,52 @@ class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler):
     def status(self, s):
         """Set 'status' property."""
         self._status = s
-        self.agent_mgr.status_set("status", self._status)
+        self.agent_mgr.status_set("status", self.status)
         self.trace("Status: {}".format(self.status))
+
+    @property
+    def result(self):
+        """Get 'result' property."""
+        return self._result
+
+    @result.setter
+    def result(self, r):
+        """Set 'result' property."""
+        self._result = r
+        self.agent_mgr.status_set("result", self.result)
+        self.trace("Result: {}".format(self.result))
+
+    @property
+    def last_start(self):
+        """Set the 'last_start' timestamp."""
+        return self._last_start
+
+    @last_start.setter
+    def last_start(self, ts):
+        """Set the 'last_start' timestamp."""
+        if not isinstance(ts, datetime.datetime):
+            raise TypeError("Expected datetime.datetime, got {}".format(ts))
+        self._last_start = ts
+        self.agent_mgr.status_set("last_start", str(self.last_start))
+        self.trace("Last start: {}".format(ts))
+
+    @property
+    def last_end(self):
+        """Set the 'last_end' timestamp."""
+        return self._last_end
+
+    @last_end.setter
+    def last_end(self, ts):
+        """Set the 'last_end' timestamp."""
+        if not isinstance(ts, datetime.datetime):
+            raise TypeError("Expected datetime.datetime, got {}".format(ts))
+        self._last_end = ts
+        self.agent_mgr.status_set("last_end", str(self.last_end))
+        self.trace("Last end: {}".format(ts))
 
     def trace(self, msg, level=0):
         """Write tracing output."""
-        self.tracer.trace(level, msg)
+        self.tracer.trace(level, str(msg))
 
     def configure(self):
         """Read and set all configuration options."""
@@ -130,10 +177,28 @@ class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler):
         """Refresh VRP data and update state."""
         self.status = "running"
         if self.cache_url is not None:
-            self.trace("Getting VRP set from {}".format(self.cache_url))
+            self.last_start = datetime.datetime.now()
+            try:
+                vrps = self.fetch()
+                self.trace("Fetched {} VRPs".format(len(vrps)))
+                self.result = "ok"
+            except Exception as e:
+                self.trace(e)
+                self.result = "failed"
+            self.last_end = datetime.datetime.now()
         else:
             self.trace("'cache_url' is not set".format(self.cache_url))
         self.sleep()
+
+    def fetch(self):
+        """Fetch VRPs from RPKI validation cache."""
+        self.trace("Getting VRP set from {}".format(self.cache_url))
+        with requests.Session() as s:
+            resp = s.get(self.cache_url,
+                         headers={"Accept": "application/json"})
+            data = resp.json()
+        vrps = [VRP(**r) for r in data["roas"]]
+        return vrps
 
     def sleep(self):
         """Go to sleep for 'refresh_interval' seconds."""
