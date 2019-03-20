@@ -19,7 +19,8 @@ import logging
 import rpki_agent.__meta__  # noqa
 
 from rpki_agent.agent import RpkiAgent
+from rpki_agent.cli import start
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
-__all__ = [RpkiAgent.__name__]
+__all__ = [RpkiAgent.__name__, start.__name__]

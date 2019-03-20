@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 # Copyright (c) 2019 Ben Maddison. All rights reserved.
 #
 # The contents of this file are licensed under the MIT License
@@ -9,30 +10,28 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations under
 # the License.
-"""rpki_agent cli entry point."""
+"""RpkiAgent EOS SDK Agent."""
 
 from __future__ import print_function
 
 import sys
 
-from rpki_agent import RpkiAgent
+import eossdk
+
+from rpki_agent import start
 
 
-def start(sdk):
-    """Start the RpkiAgent."""
+def main():
+    """Run the RpkiAgent."""
     try:
-        # create a Sysdb mount profile, restarting if necessary
-        if RpkiAgent.set_sysdb_mp(sdk.name()):
-            # return a user defined status to indicate
-            # that a restart is desired
-            return 64
-        # create an instance of the RpkiAgent
-        agent = RpkiAgent(sdk)  # noqa: W0612
-        # enter the sdk event-loop
-        sdk.main_loop(sys.argv)
-    except KeyboardInterrupt:
-        return 130
+        # get an instance of the EOS SDK
+        sdk = eossdk.Sdk()
     except Exception:
-        raise
-        # return 1
-    return
+        # return a generic error status on failure
+        return 1
+    # start the agent
+    return start(sdk)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -28,11 +28,10 @@ __classifiers__ = [
     'Topic :: Software Development :: Libraries :: Python Modules',
     'Topic :: Internet',
 ]
-__entry_points__ = {
-    'console_scripts': [
-        'RpkiAgent=rpki_agent.cli:main',
-    ]
-}
+__entry_points__ = None
+__scripts__ = [
+    "bin/RpkiAgent"
+]
 
 
 if __name__ == "__main__":
