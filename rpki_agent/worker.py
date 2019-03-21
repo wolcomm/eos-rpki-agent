@@ -20,13 +20,14 @@ import eossdk
 import requests
 
 from rpki_agent.vrp import VRP
+from rpki_agent.exceptions import handle_sigterm, TermException
 
 
 class RpkiWorker(multiprocessing.Process):
     """Worker to fetch and process RPKI VRP data."""
 
     def __init__(self, cache_url, *args, **kwargs):
-        """Initialise a RpkiWorker instance."""
+        """Initialise an RpkiWorker instance."""
         super(RpkiWorker, self).__init__(*args, **kwargs)
         self.tracer = eossdk.Tracer(self.__class__.__name__)
         self.cache_url = cache_url
@@ -69,13 +70,3 @@ class RpkiWorker(multiprocessing.Process):
         """Get exception raised by worker."""
         if self.p_err.poll():
             return self.p_err.recv()
-
-
-class TermException(BaseException):  # noqa: D204
-    """Raised when SIGTERM is handled by handle_sigterm."""
-    pass
-
-
-def handle_sigterm(signum, frame):
-    """Handle a SIGTERM signal by raising custom exception."""
-    raise TermException
