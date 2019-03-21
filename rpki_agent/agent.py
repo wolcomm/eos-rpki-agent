@@ -215,6 +215,7 @@ class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler,
         self.trace("Stopped watching {}".format(conn))
         if close:
             self.trace("Closing connection {}".format(conn))
+            conn.close()
 
     def success(self):
         """Process VRP data."""
@@ -256,6 +257,7 @@ class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler,
             if self.worker.is_alive():
                 self.trace("Killing worker: pid {}".format(self.worker.pid))
                 self.worker.terminate()
+                self.worker.join()
         self.worker = None
         self.trace("Cleanup complete")
 
@@ -263,6 +265,16 @@ class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler,
         """Go to sleep for 'refresh_interval' seconds."""
         self.status = "sleeping"
         self.timeout_time_is(eossdk.now() + self.refresh_interval)
+
+    def shutdown(self):
+        """Shutdown the agent gracefully."""
+        self.trace("Shutting down")
+        try:
+            self.cleanup()
+        except Exception as e:
+            self.trace(e)
+        self.status = "shutdown"
+        self.agent_mgr.agent_shutdown_complete_is(True)
 
     def on_initialized(self):
         """Start the agent after initialisation."""
@@ -274,13 +286,21 @@ class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler,
         """Handle a change to a configuration option."""
         self.set(key, value)
 
+    def on_agent_enabled(self, enabled):
+        """Handle a change in the admin state of the agent."""
+        if enabled:
+            self.trace("Agent enabled")
+        else:
+            self.trace("Agent disabled")
+            self.shutdown()
+
     def on_timeout(self):
         """Handle a 'refresh_interval' timeout."""
         self.run()
 
     def on_readable(self, fd):
         """Handle a watched file descriptor becoming readable."""
-        self.trace("watched file descriptor {} is readable".format(fd))
+        self.trace("Watched file descriptor {} is readable".format(fd))
         if fd == self.worker.p_data.fileno():
             self.trace("Data channel is ready")
             return self.success()

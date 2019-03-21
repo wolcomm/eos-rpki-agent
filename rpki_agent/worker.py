@@ -14,6 +14,7 @@
 from __future__ import print_function
 
 import multiprocessing
+import signal
 
 import eossdk
 import requests
@@ -38,6 +39,7 @@ class RpkiWorker(multiprocessing.Process):
 
     def run(self):
         """Run the worker process."""
+        signal.signal(signal.SIGTERM, handle_sigterm)
         try:
             self.trace("Getting VRP set from {}".format(self.cache_url))
             with requests.Session() as s:
@@ -47,6 +49,8 @@ class RpkiWorker(multiprocessing.Process):
             vrps = [VRP(**r) for r in data["roas"]]
             self.trace("Fetched {} VRPs".format(len(vrps)))
             self.c_data.send(vrps)
+        except TermException:
+            self.trace("Got SIGTERM signal: exiting.")
         except Exception as e:
             self.trace(e)
             self.c_err.send(e)
@@ -65,3 +69,13 @@ class RpkiWorker(multiprocessing.Process):
         """Get exception raised by worker."""
         if self.p_err.poll():
             return self.p_err.recv()
+
+
+class TermException(BaseException):  # noqa: D204
+    """Raised when SIGTERM is handled by handle_sigterm."""
+    pass
+
+
+def handle_sigterm(signum, frame):
+    """Handle a SIGTERM signal by raising custom exception."""
+    raise TermException
