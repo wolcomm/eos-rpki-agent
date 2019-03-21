@@ -21,12 +21,12 @@ import shutil
 import tempfile
 
 import eossdk
-import requests
 
-from rpki_agent.vrp import VRP
+from rpki_agent.worker import RpkiWorker
 
 
-class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler):
+class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler,
+                eossdk.FdHandler):
     """An EOS SDK based agent that creates routing policy objects."""
 
     sysdb_mounts = ("agent",)
@@ -63,6 +63,10 @@ class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler):
         # init sdk handlers
         eossdk.AgentHandler.__init__(self, self.agent_mgr)
         eossdk.TimeoutHandler.__init__(self, self.timeout_mgr)
+        eossdk.FdHandler.__init__(self)
+        # set worker process to None
+        self.worker = None
+        self.watching = set()
         # set default confg options
         self._cache_url = None
         self._refresh_interval = 10
@@ -174,31 +178,86 @@ class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler):
             self.trace("Ignoring unknown option '{}'".format(key))
 
     def run(self):
-        """Refresh VRP data and update state."""
+        """Spawn worker process to retrieve VRP data."""
         self.status = "running"
         if self.cache_url is not None:
             self.last_start = datetime.datetime.now()
             try:
-                vrps = self.fetch()
-                self.trace("Fetched {} VRPs".format(len(vrps)))
-                self.result = "ok"
+                self.trace("Initialising worker")
+                self.worker = RpkiWorker(cache_url=self.cache_url)
+                self.watch(self.worker.p_data, "result")
+                self.watch(self.worker.p_err, "error")
+                self.trace("Starting worker")
+                self.worker.start()
+                self.trace("Worker started: pid {}".format(self.worker.pid))
             except Exception as e:
-                self.trace(e)
-                self.result = "failed"
-            self.last_end = datetime.datetime.now()
+                self.trace("Starting worker failed: {}".format(e))
+                self.failure(err=e)
         else:
             self.trace("'cache_url' is not set".format(self.cache_url))
+            self.sleep()
+
+    def watch(self, conn, type):
+        """Watch a Connection for new data."""
+        self.trace("Trying to watch for {} data on {}".format(type, conn))
+        fileno = conn.fileno()
+        self.watch_readable(fileno, True)
+        self.watching.add(fileno)
+        self.trace("Watching {} for {} data".format(conn, type))
+
+    def unwatch(self, conn, close=False):
+        """Stop watching a Connection for new data."""
+        self.trace("Trying to remove watch on {}".format(conn))
+        fileno = conn.fileno()
+        self.watch_readable(fileno, False)
+        if fileno in self.watching:
+            self.watching.remove(fileno)
+        self.trace("Stopped watching {}".format(conn))
+        if close:
+            self.trace("Closing connection {}".format(conn))
+
+    def success(self):
+        """Process VRP data."""
+        self.status = "finalising"
+        self.trace("Receiving data from worker")
+        vrps = self.worker.data
+        self.trace("Received {} VRPs from worker".format(len(vrps)))
+        self.result = "ok"
+        self.last_end = datetime.datetime.now()
+        self.cleanup()
         self.sleep()
 
-    def fetch(self):
-        """Fetch VRPs from RPKI validation cache."""
-        self.trace("Getting VRP set from {}".format(self.cache_url))
-        with requests.Session() as s:
-            resp = s.get(self.cache_url,
-                         headers={"Accept": "application/json"})
-            data = resp.json()
-        vrps = [VRP(**r) for r in data["roas"]]
-        return vrps
+    def failure(self, err=None):
+        """Handle worker exception."""
+        self.status = "error"
+        if err is None:
+            try:
+                err = self.worker.error
+            except Exception as e:
+                self.trace("Retreiving exception from worker failed")
+                err = e
+        self.trace(err)
+        self.result = "failed"
+        self.last_end = datetime.datetime.now()
+        self.cleanup()
+        self.sleep()
+
+    def cleanup(self):
+        """Kill the worker process if it is still running."""
+        self.status = "cleanup"
+        self.trace("Cleaning up worker process")
+        if self.worker is not None:
+            self.trace("Closing connections from worker")
+            try:
+                self.unwatch(self.worker.p_data, close=True)
+                self.unwatch(self.worker.p_err, close=True)
+            except Exception as e:
+                self.trace(e)
+            if self.worker.is_alive():
+                self.trace("Killing worker: pid {}".format(self.worker.pid))
+                self.worker.terminate()
+        self.worker = None
+        self.trace("Cleanup complete")
 
     def sleep(self):
         """Go to sleep for 'refresh_interval' seconds."""
@@ -218,3 +277,15 @@ class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler):
     def on_timeout(self):
         """Handle a 'refresh_interval' timeout."""
         self.run()
+
+    def on_readable(self, fd):
+        """Handle a watched file descriptor becoming readable."""
+        self.trace("watched file descriptor {} is readable".format(fd))
+        if fd == self.worker.p_data.fileno():
+            self.trace("Data channel is ready")
+            return self.success()
+        elif fd == self.worker.p_err.fileno():
+            self.trace("Exception received from worker")
+            return self.failure()
+        else:
+            self.trace("Unknown file descriptor: ignoring")
