@@ -14,7 +14,10 @@
 
 from __future__ import print_function
 
+import collections
 import ipaddress
+
+from aggregate_prefixes.aggregate_prefixes import aggregate_prefixes
 
 
 class VRP(object):
@@ -58,3 +61,38 @@ class VRP(object):
     def __repr__(self):
         """Representation as a dict."""
         return self.as_dict.__repr__()
+
+
+class VRPSet(collections.Set):
+    """A set of VRPs."""
+
+    def __init__(self, iterable):
+        """Initialise a VRPSet."""
+        self.elements = set(iterable)
+
+    def __iter__(self):
+        """Implement iteration."""
+        return self.elements.__iter__()
+
+    def __contains__(self, value):
+        """Implement membership."""
+        return self.elements.__contains__(value)
+
+    def __len__(self):
+        """Implement sizing."""
+        return self.elements.__len__()
+
+    def covered(self, afi):
+        """Return a set of prefixes covered by the VRP set."""
+        return set(aggregate_prefixes([vrp.prefix for vrp in self
+                                       if vrp.afi == afi]))
+
+    def origins(self, afi):
+        """Return a set of origins in the VRP set."""
+        return set([vrp.as_number for vrp in self
+                    if vrp.afi == afi and vrp.asn != "AS0"])
+
+    def prefixes_by_origin(self, origin, afi):
+        """Return the VRPSet of VRPs with the given origin AS."""
+        return VRPSet([vrp for vrp in self
+                       if vrp.as_number == origin and vrp.afi == afi])

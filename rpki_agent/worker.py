@@ -19,7 +19,7 @@ import signal
 import eossdk
 import requests
 
-from rpki_agent.vrp import VRP
+from rpki_agent.vrp import VRP, VRPSet
 from rpki_agent.exceptions import handle_sigterm, TermException
 
 
@@ -42,13 +42,13 @@ class RpkiWorker(multiprocessing.Process):
         """Run the worker process."""
         signal.signal(signal.SIGTERM, handle_sigterm)
         try:
-            self.trace("Getting VRP set from {}".format(self.cache_url))
-            with requests.Session() as s:
-                resp = s.get(self.cache_url,
-                             headers={"Accept": "application/json"})
-                data = resp.json()
-            vrps = [VRP(**r) for r in data["roas"]]
-            self.trace("Fetched {} VRPs".format(len(vrps)))
+            vrps = self.fetch()
+            self.trace("Got {} ipv4 and {} ipv6 covered prefixes"
+                       .format(len(vrps.covered("ipv4")),
+                               len(vrps.covered("ipv6"))))
+            self.trace("Got {} ipv4 and {} ipv6 origin ASNs"
+                       .format(len(vrps.origins("ipv4")),
+                               len(vrps.origins("ipv6"))))
             self.c_data.send(vrps)
         except TermException:
             self.trace("Got SIGTERM signal: exiting.")
@@ -58,6 +58,17 @@ class RpkiWorker(multiprocessing.Process):
         finally:
             self.c_err.close()
             self.c_data.close()
+
+    def fetch(self):
+        """Fetch VRP set from the RPKI validation cache."""
+        self.trace("Getting VRP set from {}".format(self.cache_url))
+        with requests.Session() as s:
+            resp = s.get(self.cache_url,
+                         headers={"Accept": "application/json"})
+            data = resp.json()
+        vrps = VRPSet([VRP(**r) for r in data["roas"]])
+        self.trace("Fetched {} VRPs".format(len(vrps)))
+        return vrps
 
     @property
     def data(self):
