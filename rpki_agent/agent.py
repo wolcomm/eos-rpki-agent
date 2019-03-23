@@ -14,18 +14,22 @@
 
 from __future__ import print_function
 
+import collections
 import datetime
 import filecmp
 import os
 import shutil
+import signal
 import tempfile
 
 import eossdk
 
+from rpki_agent.base import RpkiBase
+from rpki_agent.listener import RpkiListener
 from rpki_agent.worker import RpkiWorker
 
 
-class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler,
+class RpkiAgent(RpkiBase, eossdk.AgentHandler, eossdk.TimeoutHandler,
                 eossdk.FdHandler):
     """An EOS SDK based agent that creates routing policy objects."""
 
@@ -55,8 +59,7 @@ class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler,
     def __init__(self, sdk):
         """Initialise the agent instance."""
         # Set up tracing
-        self.name = sdk.name()
-        self.tracer = eossdk.Tracer(self.name)
+        RpkiBase.__init__(self)
         # get sdk managers
         self.agent_mgr = sdk.get_agent_mgr()
         self.timeout_mgr = sdk.get_timeout_mgr()
@@ -114,7 +117,7 @@ class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler,
         """Set 'status' property."""
         self._status = s
         self.agent_mgr.status_set("status", self.status)
-        self.trace("Status: {}".format(self.status))
+        self.info("Status: {}".format(self.status))
 
     @property
     def result(self):
@@ -126,7 +129,7 @@ class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler,
         """Set 'result' property."""
         self._result = r
         self.agent_mgr.status_set("result", self.result)
-        self.trace("Result: {}".format(self.result))
+        self.notice("Result: {}".format(self.result))
 
     @property
     def last_start(self):
@@ -140,7 +143,7 @@ class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler,
             raise TypeError("Expected datetime.datetime, got {}".format(ts))
         self._last_start = ts
         self.agent_mgr.status_set("last_start", str(self.last_start))
-        self.trace("Last start: {}".format(ts))
+        self.info("Last start: {}".format(ts))
 
     @property
     def last_end(self):
@@ -154,15 +157,11 @@ class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler,
             raise TypeError("Expected datetime.datetime, got {}".format(ts))
         self._last_end = ts
         self.agent_mgr.status_set("last_end", str(self.last_end))
-        self.trace("Last end: {}".format(ts))
-
-    def trace(self, msg, level=0):
-        """Write tracing output."""
-        self.tracer.trace(level, str(msg))
+        self.info("Last end: {}".format(ts))
 
     def configure(self):
         """Read and set all configuration options."""
-        self.trace("Reading configuration options")
+        self.info("Reading configuration options")
         for key in self.agent_mgr.agent_option_iter():
             value = self.agent_mgr.agent_option(key)
             self.set(key, value)
@@ -171,11 +170,31 @@ class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler,
         """Set a configuration option."""
         if not value:
             value = None
-        self.trace("Setting configuration '{}'='{}'".format(key, value))
+        self.info("Setting configuration '{}'='{}'".format(key, value))
         if key in self.agent_options:
             setattr(self, key, value)
         else:
-            self.trace("Ignoring unknown option '{}'".format(key))
+            self.warning("Ignoring unknown option '{}'".format(key))
+
+    def start(self):
+        """Start up the agent."""
+        self.status = "init"
+        self.configure()
+        self.init()
+        self.run()
+
+    def init(self):
+        """Start up the Listener."""
+        try:
+            self.info("Initialising listener")
+            self.listener = RpkiListener()
+            self.watch(self.listener.p_err, "error")
+            self.info("Starting listener")
+            self.listener.start()
+            self.info("Listener started: pid {}".format(self.listener.pid))
+        except Exception as e:
+            self.err("Starting listener failed: {}".format(e))
+            raise e
 
     def run(self):
         """Spawn worker process to retrieve VRP data."""
@@ -183,83 +202,101 @@ class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler,
         if self.cache_url is not None:
             self.last_start = datetime.datetime.now()
             try:
-                self.trace("Initialising worker")
+                self.info("Initialising worker")
                 self.worker = RpkiWorker(cache_url=self.cache_url)
                 self.watch(self.worker.p_data, "result")
                 self.watch(self.worker.p_err, "error")
-                self.trace("Starting worker")
+                self.info("Starting worker")
                 self.worker.start()
-                self.trace("Worker started: pid {}".format(self.worker.pid))
+                self.info("Worker started: pid {}".format(self.worker.pid))
             except Exception as e:
-                self.trace("Starting worker failed: {}".format(e))
+                self.err("Starting worker failed: {}".format(e))
                 self.failure(err=e)
         else:
-            self.trace("'cache_url' is not set".format(self.cache_url))
+            self.warning("'cache_url' is not set".format(self.cache_url))
             self.sleep()
 
     def watch(self, conn, type):
         """Watch a Connection for new data."""
-        self.trace("Trying to watch for {} data on {}".format(type, conn))
+        self.info("Trying to watch for {} data on {}".format(type, conn))
         fileno = conn.fileno()
         self.watch_readable(fileno, True)
-        self.watching.add(fileno)
-        self.trace("Watching {} for {} data".format(conn, type))
+        self.watching.add(conn)
+        self.info("Watching {} for {} data".format(conn, type))
 
     def unwatch(self, conn, close=False):
         """Stop watching a Connection for new data."""
-        self.trace("Trying to remove watch on {}".format(conn))
+        self.info("Trying to remove watch on {}".format(conn))
         fileno = conn.fileno()
         self.watch_readable(fileno, False)
-        if fileno in self.watching:
-            self.watching.remove(fileno)
-        self.trace("Stopped watching {}".format(conn))
+        if conn in self.watching:
+            self.watching.remove(conn)
+        self.info("Stopped watching {}".format(conn))
         if close:
-            self.trace("Closing connection {}".format(conn))
+            self.info("Closing connection {}".format(conn))
             conn.close()
 
     def success(self):
         """Process VRP data."""
         self.status = "finalising"
-        self.trace("Receiving data from worker")
-        vrps = self.worker.data
-        self.trace("Received {} VRPs from worker".format(len(vrps)))
+        self.info("Receiving results from worker")
+        (stats, vrps) = self.worker.data
+        self.info("Sending listener HUP signal")
+        os.kill(self.listener.pid, signal.SIGHUP)
+        self.info("Sending new VRP set to listener")
+        self.listener.p_data.send(vrps)
+        self.report(**stats)
         self.result = "ok"
         self.last_end = datetime.datetime.now()
-        self.cleanup()
+        self.cleanup(process=self.worker)
         self.sleep()
 
-    def failure(self, err=None):
+    def failure(self, err=None, process=None, restart=False):
         """Handle worker exception."""
         self.status = "error"
         if err is None:
             try:
-                err = self.worker.error
+                err = process.error
             except Exception as e:
-                self.trace("Retreiving exception from worker failed")
+                self.err("Retreiving exception from {} failed"
+                         .format(process.__class__.__name__))
                 err = e
-        self.trace(err)
+        self.err(err)
         self.result = "failed"
         self.last_end = datetime.datetime.now()
-        self.cleanup()
-        self.sleep()
+        if restart:
+            self.restart()
+        else:
+            self.cleanup(process=process)
+            self.sleep()
 
-    def cleanup(self):
-        """Kill the worker process if it is still running."""
+    def report(self, **stats):
+        """Report statistics to the agent manager."""
+        for name, value in stats.items():
+            self.info("{}: {}".format(name, value))
+            self.agent_mgr.status_set(name, str(value))
+
+    def cleanup(self, process):
+        """Kill the process if it is still running."""
         self.status = "cleanup"
-        self.trace("Cleaning up worker process")
-        if self.worker is not None:
-            self.trace("Closing connections from worker")
+        process_name = process.__class__.__name__
+        self.info("Cleaning up {} process".format(process_name))
+        if process is not None:
+            self.info("Closing connections from {}".format(process_name))
             try:
-                self.unwatch(self.worker.p_data, close=True)
-                self.unwatch(self.worker.p_err, close=True)
+                for conn in [c for c in
+                             [getattr(process, k) for k in dir(process)]
+                             if isinstance(c, collections.Hashable)
+                             and c in self.watching]:
+                    self.unwatch(conn, close=True)
             except Exception as e:
-                self.trace(e)
-            if self.worker.is_alive():
-                self.trace("Killing worker: pid {}".format(self.worker.pid))
-                self.worker.terminate()
-                self.worker.join()
-        self.worker = None
-        self.trace("Cleanup complete")
+                self.err(e)
+            if process.is_alive():
+                self.info("Killing {}: pid {}".format(process_name,
+                                                      process.pid))
+                process.terminate()
+                process.join()
+        self.info("Cleanup complete")
 
     def sleep(self):
         """Go to sleep for 'refresh_interval' seconds."""
@@ -268,19 +305,29 @@ class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler,
 
     def shutdown(self):
         """Shutdown the agent gracefully."""
-        self.trace("Shutting down")
+        self.notice("Shutting down")
         try:
-            self.cleanup()
+            self.cleanup(process=self.worker)
+            self.cleanup(process=self.listener)
         except Exception as e:
-            self.trace(e)
+            self.err(e)
         self.status = "shutdown"
         self.agent_mgr.agent_shutdown_complete_is(True)
 
+    def restart(self):
+        """Restart the agent."""
+        self.notice("Restarting")
+        self.status = "restarting"
+        try:
+            self.cleanup(process=self.worker)
+            self.cleanup(process=self.listener)
+        except Exception as e:
+            self.err(e)
+        self.start()
+
     def on_initialized(self):
         """Start the agent after initialisation."""
-        self.status = "init"
-        self.configure()
-        self.run()
+        self.start()
 
     def on_agent_option(self, key, value):
         """Handle a change to a configuration option."""
@@ -289,9 +336,9 @@ class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler,
     def on_agent_enabled(self, enabled):
         """Handle a change in the admin state of the agent."""
         if enabled:
-            self.trace("Agent enabled")
+            self.notice("Agent enabled")
         else:
-            self.trace("Agent disabled")
+            self.notice("Agent disabled")
             self.shutdown()
 
     def on_timeout(self):
@@ -300,12 +347,15 @@ class RpkiAgent(eossdk.AgentHandler, eossdk.TimeoutHandler,
 
     def on_readable(self, fd):
         """Handle a watched file descriptor becoming readable."""
-        self.trace("Watched file descriptor {} is readable".format(fd))
+        self.info("Watched file descriptor {} is readable".format(fd))
         if fd == self.worker.p_data.fileno():
-            self.trace("Data channel is ready")
+            self.info("Data channel is ready")
             return self.success()
         elif fd == self.worker.p_err.fileno():
-            self.trace("Exception received from worker")
-            return self.failure()
+            self.info("Exception received from worker")
+            return self.failure(process=self.worker)
+        elif fd == self.listener.p_err.fileno():
+            self.info("Exception received from listener")
+            return self.failure(process=self.listener, restart=True)
         else:
-            self.trace("Unknown file descriptor: ignoring")
+            self.warning("Unknown file descriptor: ignoring")

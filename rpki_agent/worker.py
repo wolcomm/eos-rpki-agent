@@ -16,58 +16,70 @@ from __future__ import print_function
 import multiprocessing
 import signal
 
-import eossdk
+import pyeapi
 import requests
 
+from rpki_agent.base import RpkiBase
 from rpki_agent.vrp import VRP, VRPSet
 from rpki_agent.exceptions import handle_sigterm, TermException
 
 
-class RpkiWorker(multiprocessing.Process):
+class RpkiWorker(multiprocessing.Process, RpkiBase):
     """Worker to fetch and process RPKI VRP data."""
 
     def __init__(self, cache_url, *args, **kwargs):
         """Initialise an RpkiWorker instance."""
         super(RpkiWorker, self).__init__(*args, **kwargs)
-        self.tracer = eossdk.Tracer(self.__class__.__name__)
+        RpkiBase.__init__(self)
         self.cache_url = cache_url
         self.p_err, self.c_err = multiprocessing.Pipe(duplex=False)
         self.p_data, self.c_data = multiprocessing.Pipe(duplex=False)
 
-    def trace(self, msg, level=0):
-        """Write tracing output."""
-        self.tracer.trace(level, str(msg))
-
     def run(self):
         """Run the worker process."""
+        self.info("Worker started")
         signal.signal(signal.SIGTERM, handle_sigterm)
         try:
+            stats = dict()
+            self.node = self.connect_eapi()
             vrps = self.fetch()
-            self.trace("Got {} ipv4 and {} ipv6 covered prefixes"
-                       .format(len(vrps.covered("ipv4")),
-                               len(vrps.covered("ipv6"))))
-            self.trace("Got {} ipv4 and {} ipv6 origin ASNs"
-                       .format(len(vrps.origins("ipv4")),
-                               len(vrps.origins("ipv6"))))
-            self.c_data.send(vrps)
+            all_origins = set()
+            self.info("Calculating statistics")
+            for afi in ("ipv4", "ipv6"):
+                covered = vrps.covered(afi)
+                origins = vrps.origins(afi)
+                stats["covered_prefixes_{}".format(afi)] = len(covered)
+                stats["origin_asns_{}".format(afi)] = len(origins)
+                all_origins.update(origins)
+            stats["origin_asns_total"] = len(all_origins)
+            self.c_data.send((stats, vrps))
         except TermException:
-            self.trace("Got SIGTERM signal: exiting.")
+            self.notice("Got SIGTERM signal: exiting.")
         except Exception as e:
-            self.trace(e)
+            self.err(e)
             self.c_err.send(e)
         finally:
             self.c_err.close()
             self.c_data.close()
 
+    def connect_eapi(self):
+        """Connect to the local eapi unix domain socket."""
+        self.info("Trying to connect to local eapi endpoint")
+        connection = pyeapi.client.connect(transport="socket")
+        node = pyeapi.client.Node(connection=connection)
+        self.info("Connected to eapi endpoint with version {}"
+                  .format(node.version))
+        return node
+
     def fetch(self):
         """Fetch VRP set from the RPKI validation cache."""
-        self.trace("Getting VRP set from {}".format(self.cache_url))
+        self.info("Getting VRP set from {}".format(self.cache_url))
         with requests.Session() as s:
             resp = s.get(self.cache_url,
                          headers={"Accept": "application/json"})
             data = resp.json()
         vrps = VRPSet([VRP(**r) for r in data["roas"]])
-        self.trace("Fetched {} VRPs".format(len(vrps)))
+        self.info("Fetched {} VRPs".format(len(vrps)))
         return vrps
 
     @property

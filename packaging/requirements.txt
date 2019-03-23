@@ -1,3 +1,6 @@
-ipaddress>=1.0.22,<2.0; python_version<'3.3'
-requests>=2.18.4,<3.0
 aggregate-prefixes>=0.5,<1.0
+Flask>=1.0.2,<2.0
+gunicorn>=19.9.0,<20.0
+ipaddress>=1.0.22,<2.0; python_version<'3.3'
+pyeapi>=0.8.2,<1.0
+requests>=2.18.4,<3.0

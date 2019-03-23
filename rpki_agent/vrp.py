@@ -20,7 +20,7 @@ import ipaddress
 from aggregate_prefixes.aggregate_prefixes import aggregate_prefixes
 
 
-class VRP(object):
+class VRP(collections.Mapping):
     """A validated ROA payload object."""
 
     def __init__(self, **kwargs):
@@ -28,6 +28,18 @@ class VRP(object):
         self.as_dict = kwargs
         for k, v in kwargs.items():
             setattr(self, k, v)
+
+    def __getitem__(self, key):
+        """Implement item retrieval."""
+        return self.as_dict.__getitem__(key)
+
+    def __iter__(self):
+        """Implement iteration."""
+        return self.as_dict.__iter__()
+
+    def __len__(self):
+        """Implement sizing."""
+        return self.as_dict.__len__()
 
     @property
     def afi(self):
@@ -83,16 +95,19 @@ class VRPSet(collections.Set):
         return self.elements.__len__()
 
     def covered(self, afi):
-        """Return a set of prefixes covered by the VRP set."""
-        return set(aggregate_prefixes([vrp.prefix for vrp in self
-                                       if vrp.afi == afi]))
+        """Return a VRPSet of pseudo VRPs covered by the VRP set."""
+        prefixes = aggregate_prefixes([vrp.prefix for vrp in self
+                                       if vrp.afi == afi])
+        maxlen = {"ipv4": 32, "ipv6": 128}
+        return VRPSet([VRP(asn="AS0", prefix=p, maxLength=maxlen[afi], ta=None)
+                       for p in prefixes])
 
     def origins(self, afi):
         """Return a set of origins in the VRP set."""
         return set([vrp.as_number for vrp in self
                     if vrp.afi == afi and vrp.asn != "AS0"])
 
-    def prefixes_by_origin(self, origin, afi):
+    def for_origin(self, origin, afi):
         """Return the VRPSet of VRPs with the given origin AS."""
         return VRPSet([vrp for vrp in self
                        if vrp.as_number == origin and vrp.afi == afi])
